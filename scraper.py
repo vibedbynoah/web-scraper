@@ -11,7 +11,6 @@ Usage:
 Supported sites: ebay, craigslist, bonanza, amazon, etsy, walmart, aliexpress
 """
 
-import asyncio
 import json
 import csv
 import sys
@@ -19,10 +18,11 @@ import time
 import random
 import argparse
 import re
+import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, asdict
 from typing import Optional
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -84,6 +84,9 @@ def get_session():
 
 
 def fetch(session: requests.Session, url: str) -> Optional[str]:
+    """Fetch a URL with retry logic and exponential backoff for retryable errors."""
+    retryable_status = {429, 503}
+    delays = [1, 2]  # seconds between retries (up to 2 retries after the initial attempt)
     for attempt in range(3):
         try:
             session.headers["User-Agent"] = random.choice(USER_AGENTS)
@@ -93,13 +96,62 @@ def fetch(session: requests.Session, url: str) -> Optional[str]:
                 if len(r.text) < 30000 and "Challenge" in r.text:
                     return None
                 return r.text
-            if r.status_code == 429:
-                time.sleep(2 ** attempt)
+            if r.status_code in retryable_status and attempt < 2:
+                time.sleep(delays[attempt])
+                continue
+            return None
+        except (requests.ConnectionError, requests.Timeout) as e:
+            if attempt < 2:
+                time.sleep(delays[attempt])
                 continue
             return None
         except requests.RequestException:
-            time.sleep(1)
+            return None
     return None
+
+
+def deduplicate_listings(listings: list) -> list:
+    """Remove duplicate listings by URL (falls back to title if URL is empty)."""
+    seen = set()
+    unique = []
+    for listing in listings:
+        key = listing.url if listing.url else listing.title
+        if key not in seen:
+            seen.add(key)
+            unique.append(listing)
+    return unique
+
+
+def parse_price(raw: str) -> Optional[float]:
+    """Normalize a raw price string to a float, or None if unparseable/free/$0."""
+    if not raw:
+        return None
+    raw = raw.strip()
+    # Reject free / $0
+    if re.match(r"(?i)^free$", raw):
+        return None
+    # Strip currency symbols and words, keep digits, commas, dots
+    cleaned = re.sub(r"[^\d.,]", "", raw.replace(",", ""))
+    # Handle "USD 1234" or "1234.56 USD" patterns
+    match = re.search(r"(\d+\.?\d*)", cleaned)
+    if not match:
+        return None
+    try:
+        val = float(match.group(1))
+        return None if val == 0.0 else val
+    except ValueError:
+        return None
+
+
+def is_valid_listing_url(url: str) -> bool:
+    """Return True if the URL is parseable and has http/https scheme."""
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url)
+        return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -483,15 +535,27 @@ def scrape_all(query: str, sites: list[str], pages: int, max_workers: int = 30) 
         for url in urls:
             work.append((session, url, parse_fn, site_name))
 
-    print(f"  Fetching {len(work)} URLs across {len(sites)} sites with {max_workers} threads...")
+    # Dynamic sizing: scale workers to workload, cap at max_workers
+    effective_workers = min(max_workers, max(1, len(sites) * 2))
+    print(f"  Fetching {len(work)} URLs across {len(sites)} sites with {effective_workers} threads...")
 
     all_listings = []
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        results = pool.map(scrape_url, work)
-        for batch in results:
-            all_listings.extend(batch)
+    with ThreadPoolExecutor(max_workers=effective_workers) as pool:
+        futures = {pool.submit(scrape_url, item): item for item in work}
+        done, not_done = concurrent.futures.wait(futures, timeout=30)
+        # Cancel any futures that didn't finish within the timeout
+        for f in not_done:
+            f.cancel()
+        for f in done:
+            try:
+                all_listings.extend(f.result())
+            except Exception:
+                pass
 
-    return all_listings
+    # Filter listings with malformed URLs before deduplication
+    all_listings = [l for l in all_listings if is_valid_listing_url(l.url)]
+
+    return deduplicate_listings(all_listings)
 
 
 # ---------------------------------------------------------------------------
@@ -563,16 +627,6 @@ def main():
     listings = scrape_all(args.query, sites, args.pages, args.workers)
 
     elapsed = time.time() - t0
-
-    # De-duplicate by URL
-    seen = set()
-    unique = []
-    for l in listings:
-        key = l.url or l.title
-        if key not in seen:
-            seen.add(key)
-            unique.append(l)
-    listings = unique
 
     # Stats per site
     site_counts = {}
