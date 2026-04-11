@@ -2,3 +2,14 @@ flask>=3.0.0
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 lxml>=5.0.0
+
+# LLM integration (Ollama client — no extra package needed, uses requests)
+# ollama_client.py is included in the project
+
+# JS rendering (optional — install whichever is available)
+# playwright>=1.40.0      # pip install playwright && playwright install chromium
+# requests-html>=0.10.0   # pip install requests-html
+
+# Caching — disk-based implementation is built-in (no extra dep required)
+# For faster cache ops, optionally install:
+# diskcache>=5.6.0
