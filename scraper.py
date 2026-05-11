@@ -105,7 +105,8 @@ EBAY_DOMAINS = [
 # Page cache — keyed by URL sha256, stored on disk as plain JSON files
 # ---------------------------------------------------------------------------
 
-CACHE_DIR = os.path.join(os.path.dirname(__file__), ".page_cache")
+_DATA_DIR = os.environ.get("CARD_GRADER_DATA_DIR", os.path.dirname(__file__))
+CACHE_DIR = os.path.join(_DATA_DIR, "page_cache")
 CACHE_TTL_SECONDS = 3600  # 1 hour
 
 
@@ -963,16 +964,27 @@ def scrape_all(
             except Exception:
                 pass
 
-    # LLM extraction fallback: if a site returned no listings, try LLM
+    # LLM extraction fallback: trigger when CSS parser returns fewer than 3 results per site
+    # (not just 0 — sparse results often mean the CSS selectors are partially broken)
     if smart and _llm_available():
-        sites_with_results = {l.site for l in all_listings}
+        site_result_counts: dict[str, int] = {}
+        for l in all_listings:
+            site_result_counts[l.site] = site_result_counts.get(l.site, 0) + 1
+
+        _LLM_TRIGGER_THRESHOLD = int(os.environ.get("LLM_TRIGGER_THRESHOLD", "3"))
         for site_name in sites:
-            if site_name not in sites_with_results and html_by_site.get(site_name):
-                logger.info("CSS parser found 0 results for %s — trying LLM extraction", site_name)
+            count = site_result_counts.get(site_name, 0)
+            if count < _LLM_TRIGGER_THRESHOLD and html_by_site.get(site_name):
+                logger.info(
+                    "CSS parser found only %d results for %s (threshold=%d) — trying LLM extraction",
+                    count, site_name, _LLM_TRIGGER_THRESHOLD,
+                )
                 for html in html_by_site[site_name][:2]:   # try first 2 pages
                     llm_listings = _llm_extract(html, query, site_name)
                     if llm_listings:
                         logger.info("LLM extracted %d listings from %s", len(llm_listings), site_name)
+                        # Remove the sparse CSS results for this site and replace with LLM results
+                        all_listings = [l for l in all_listings if l.site != site_name]
                         all_listings.extend(llm_listings)
                         break
 

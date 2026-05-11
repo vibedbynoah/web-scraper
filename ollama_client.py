@@ -12,6 +12,7 @@ Provides:
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import logging
@@ -31,17 +32,26 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-OLLAMA_BASE = "http://localhost:11434"
+OLLAMA_BASE = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 
-# Fast extraction model for scraping; fall back to reasoning model
-PRIMARY_MODEL   = "qwen3:1.7b"
-FALLBACK_MODEL  = "deepseek-r1:7b"
+# Preferred models in priority order — ranked by text quality for scraping tasks.
+# The scraper only needs text output (not vision), so small fast text models are ideal.
+_MODEL_PRIORITY = [
+    "qwen3:1.7b",
+    "qwen2.5:0.5b",          # installed — fast, good for short extraction tasks
+    "qwen2.5:7b",
+    "deepseek-r1:7b",
+    "qwen2.5vl:7b",           # vision model works for text too
+    "qwen2.5vl:7b-q4_K_M",
+    "noahmrauch/qwen2.5vl:7b-q4_K_M",
+    "tcg-grader:latest",
+]
 
 _active_model: Optional[str] = None   # resolved lazily
 
 
 def _resolve_model() -> str:
-    """Return the first available model from the running Ollama instance."""
+    """Return the best available text model from the running Ollama instance."""
     global _active_model
     if _active_model:
         return _active_model
@@ -49,19 +59,26 @@ def _resolve_model() -> str:
         resp = requests.get(f"{OLLAMA_BASE}/api/tags", timeout=5)
         if resp.ok:
             names = {m["name"] for m in resp.json().get("models", [])}
-            for candidate in (PRIMARY_MODEL, FALLBACK_MODEL):
+            for candidate in _MODEL_PRIORITY:
                 if candidate in names:
                     _active_model = candidate
-                    logger.info("Ollama: using model %s", candidate)
+                    logger.info("Ollama scraper: using model %s", candidate)
                     return candidate
-            # Any model will do
+            # Fuzzy: any qwen2.5 variant
+            for name in names:
+                if "qwen2.5" in name or "qwen3" in name or "deepseek" in name:
+                    _active_model = name
+                    logger.warning("Ollama scraper: using fallback model %s", name)
+                    return _active_model
+            # Last resort: whatever is available
             if names:
                 _active_model = next(iter(names))
-                logger.warning("Ollama: preferred models not found; using %s", _active_model)
+                logger.warning("Ollama scraper: no preferred model found; using %s", _active_model)
                 return _active_model
     except Exception as exc:
         logger.warning("Ollama: could not reach %s — %s", OLLAMA_BASE, exc)
-    _active_model = FALLBACK_MODEL
+    # Return a placeholder so callers can handle the unavailable case
+    _active_model = "qwen2.5:0.5b"
     return _active_model
 
 
@@ -92,7 +109,7 @@ def chat(
     payload: dict[str, Any] = {
         "model": model,
         "stream": False,
-        "options": {"temperature": temperature},
+        "options": {"temperature": temperature, "num_gpu": 99},
         "messages": [],
     }
     if system:

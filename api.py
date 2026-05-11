@@ -39,7 +39,8 @@ from tool_registry import TOOLS, execute_tool
 app = Flask(__name__)
 from stats_logger import attach_stats_middleware
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "scraper_api.db")
+_DATA_DIR = os.environ.get("CARD_GRADER_DATA_DIR", os.path.dirname(__file__))
+DB_PATH = os.path.join(_DATA_DIR, "scraper_api.db")
 _START_TIME = time.time()
 CACHE_TTL = 600          # 10 minutes
 CACHE_MAX_ENTRIES = 100
