@@ -135,6 +135,10 @@ def add_cors_headers(response):
 
 @app.errorhandler(Exception)
 def _handle_unhandled(e):
+    from werkzeug.exceptions import HTTPException
+    if isinstance(e, HTTPException):
+        # Preserve real status codes (404, 405, etc.) instead of squashing to 500.
+        return jsonify({"error": e.name, "description": e.description}), e.code
     import traceback
     tb = traceback.format_exc()
     print(f"[Unhandled Error] {e}\n{tb}")
