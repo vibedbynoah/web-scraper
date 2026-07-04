@@ -5,3 +5,7 @@ __pycache__/
 venv/
 *.egg-info/
 results.json
+*.db
+*.db-shm
+*.db-wal
+server.log
