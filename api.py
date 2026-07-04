@@ -557,4 +557,4 @@ if __name__ == "__main__":
     print("  Scraper API v2.0 running on http://localhost:8000")
     print("  Docs: GET /v1/search?q=QUERY&sites=ebay,craigslist&pages=1&smart=1")
     print()
-    app.run(port=8000, debug=True)
+    app.run(port=8000, debug=False)
